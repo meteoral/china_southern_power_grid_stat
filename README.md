@@ -13,6 +13,9 @@
 - **修复打开「配置/选项」对话框报 HTTP 500**：`CSGOptionsFlowHandler` 在 `__init__` 中赋值 `self.config_entry`，而新版 Home Assistant 中 `OptionsFlow.config_entry` 是只读 property（由 `self.handler` 推导），赋值会抛 `AttributeError: property 'config_entry' of 'CSGOptionsFlowHandler' object has no setter`，导致 `/api/config/config_entries/options/flow` 返回 500。现在不再在构造函数中赋值，`config_entry` 由 HA 自动提供。
 - **修复短信验证码步骤占位符缺失**：`validate_sms_code` 步骤描述使用 `{phone_no}`、`unknown` 错误信息使用 `{error_detail}`，两者都由 `description_placeholders` 渲染；此前错误分支只传了 `error_detail`，前端会报 `MISSING_VALUE` 且提示不完整。现在所有分支都同时提供 `phone_no` 和 `error_detail`。
 - **清理依赖**：移除 `manifest.json` 中已不再使用的 `brotli` 依赖（Brotli 支持已于 2026-02-01 移除）。
+- **修复深圳（区域码 090000）账号用电量取不到数据**：深圳账号的日电量接口由「深圳中台」提供，`charge/queryDayElectricByMPoint` 与 `charge/queryDayElectricByMPointYesterday` 固定返回 `sta=02 没有返回数据`，导致「昨日用电量」「当月用电量」以及当月每日用电量全部未知。现在这两个接口失败时自动回退到 `charge/queryElectricityCalendar`（即南网在线小程序使用的用电日历接口，已实测可用），读取 `totalPower` 与每日 `power`。
+
+> **深圳账号的已知限制**（服务端无对应数据，非插件问题）：`charge/queryDayElectricChargeByMPoint` 对当月返回 `sta=09 没有返回数据`，且即使对上月返回成功，`totalElectricity`/`ladderEle`/`ladderEleTariff`/`ladderEleSurplus`/`ladderEleStartDate` 仍全为 `null`；`charge/queryAnnualElectricityTierInfo` 返回 `sta=02`。因此「当月电费」「当前阶梯档位/剩余电量/电价」「一天内电费」暂时无法从南网接口获取，只能保持未知或改为本地按电价表计算。
 
 ### 2026-02-01
 - **修复 API 响应解析错误**：将 `Accept-Encoding` 从 `gzip, deflate, br` 改为 `gzip, deflate`，解决因缺少 Brotli 解压库导致 API 响应无法正确解析的问题。

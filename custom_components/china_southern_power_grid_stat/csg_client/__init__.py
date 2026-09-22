@@ -670,21 +670,70 @@ class CSGClient:
 
     def get_month_daily_usage_detail(
         self, account: CSGElectricityAccount, year_month: tuple[int, int]
-    ) -> tuple[float, list[dict[str, str | float]]]:
-        """Get daily usage of current month"""
+    ) -> tuple[float | None, list[dict[str, str | float]]]:
+        """Get daily usage of current month
+
+        `queryDayElectricByMPoint` is not implemented for every region:
+        for Shenzhen (area code 090000) accounts the "深圳中台" backend
+        answers sta=02 "没有返回数据". In that case fall back to the
+        electricity calendar, which is the API the official mini program
+        uses and which returns the same per-day power values.
+        """
 
         year, month = year_month
 
-        resp_data = self.api_query_day_electric_by_m_point(
+        try:
+            resp_data = self.api_query_day_electric_by_m_point(
+                year,
+                month,
+                account.area_code,
+                account.ele_customer_id,
+                account.metering_point_id,
+            )
+        except CSGAPIError as err:
+            _LOGGER.warning(
+                "Daily usage API failed for account %s (%s), "
+                "falling back to the electricity calendar",
+                account.account_number,
+                err,
+            )
+            return self.get_month_daily_usage_from_calendar(account, year_month)
+
+        month_total_kwh = float(resp_data["totalPower"])
+        by_day = []
+        for d_data in resp_data["result"]:
+            by_day.append(
+                {WF_ATTR_DATE: d_data["date"], WF_ATTR_KWH: float(d_data["power"])}
+            )
+        return month_total_kwh, by_day
+
+    def get_month_daily_usage_from_calendar(
+        self, account: CSGElectricityAccount, year_month: tuple[int, int]
+    ) -> tuple[float | None, list[dict[str, str | float]]]:
+        """Get daily usage of a month from `queryElectricityCalendar`
+
+        Returns (total kwh, [{date, kwh}, ...]); days without data (e.g. the
+        remaining days of the current month) are skipped.
+        """
+
+        year, month = year_month
+        resp_data = self.api_query_electricity_calender(
             year,
             month,
             account.area_code,
             account.ele_customer_id,
             account.metering_point_id,
+            account.metering_point_number,
         )
-        month_total_kwh = float(resp_data["totalPower"])
+
+        total_kwh = resp_data.get("totalPower")
+        month_total_kwh = float(total_kwh) if total_kwh is not None else None
+
         by_day = []
-        for d_data in resp_data["result"]:
+        for d_data in resp_data.get("result") or []:
+            if d_data.get("power") is None:
+                # future days of the current month have no value yet
+                continue
             by_day.append(
                 {WF_ATTR_DATE: d_data["date"], WF_ATTR_KWH: float(d_data["power"])}
             )
@@ -791,12 +840,52 @@ class CSGClient:
             )
         return float(total_year_charge), float(total_year_kwh), by_month
 
-    def get_yesterday_kwh(self, account: CSGElectricityAccount) -> float:
-        """Get power consumption(kwh) of yesterday"""
-        resp_data = self.api_query_day_electric_by_m_point_yesterday(
-            account.area_code, account.ele_customer_id
+    def get_yesterday_kwh(self, account: CSGElectricityAccount) -> float | None:
+        """Get power consumption(kwh) of yesterday
+
+        The dedicated API is not implemented for every region (Shenzhen /
+        area code 090000 answers sta=02), and it may legitimately return a
+        null value while the data for yesterday has not been published yet.
+        Fall back to yesterday's entry of the electricity calendar.
+        """
+        try:
+            resp_data = self.api_query_day_electric_by_m_point_yesterday(
+                account.area_code, account.ele_customer_id
+            )
+            if resp_data.get("power") is not None:
+                return float(resp_data["power"])
+        except CSGAPIError as err:
+            _LOGGER.warning(
+                "Yesterday usage API failed for account %s (%s), "
+                "falling back to the electricity calendar",
+                account.account_number,
+                err,
+            )
+
+        yesterday = datetime.date.today() - datetime.timedelta(days=1)
+        try:
+            _, by_day = self.get_month_daily_usage_from_calendar(
+                account, (yesterday.year, yesterday.month)
+            )
+        except CSGAPIError as err:
+            _LOGGER.error(
+                "Failed to read yesterday's usage from the calendar for "
+                "account %s: %s",
+                account.account_number,
+                err,
+            )
+            return None
+
+        wanted_date = yesterday.strftime("%Y-%m-%d")
+        for d_data in reversed(by_day):
+            if d_data[WF_ATTR_DATE] == wanted_date:
+                return d_data[WF_ATTR_KWH]
+        _LOGGER.debug(
+            "No calendar entry for %s yet (account %s), "
+            "yesterday's usage stays unknown",
+            wanted_date,
+            account.account_number,
         )
-        if resp_data["power"] is not None:
-            return float(resp_data["power"])
+        return None
 
     # end high-level api wrappers
