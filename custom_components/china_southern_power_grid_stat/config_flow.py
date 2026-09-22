@@ -76,8 +76,13 @@ class CSGConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,
     ) -> config_entries.OptionsFlow:
-        """Create the options flow."""
-        return CSGOptionsFlowHandler(config_entry)
+        """Create the options flow.
+
+        HA passes the config entry here (and calls this as a static method),
+        but the OptionsFlow instance must NOT be given the entry:
+        OptionsFlow.config_entry is a read-only property provided by HA.
+        """
+        return CSGOptionsFlowHandler()
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -175,13 +180,21 @@ class CSGConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 return self.async_show_form(
                     step_id=STEP_VALIDATE_SMS_CODE,
                     data_schema=schema,
-                    description_placeholders={"phone_no": username},
+                    description_placeholders={
+                        "phone_no": username,
+                        "error_detail": error_detail,
+                    },
                 )
             return self.async_show_form(
                 step_id=STEP_VALIDATE_SMS_CODE,
                 data_schema=schema,
                 errors=errors,
-                description_placeholders={"error_detail": error_detail},
+                # the step description needs {phone_no}, the error message needs
+                # {error_detail}; both are rendered from this same dict
+                description_placeholders={
+                    "phone_no": username,
+                    "error_detail": error_detail,
+                },
             )
 
         # sms code is present, validate with api
@@ -226,7 +239,12 @@ class CSGConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id=STEP_VALIDATE_SMS_CODE,
             data_schema=schema,
             errors=errors,
-            description_placeholders={"error_detail": error_detail},
+            # the step description needs {phone_no}, the error message needs
+            # {error_detail}; both are rendered from this same dict
+            description_placeholders={
+                "phone_no": username,
+                "error_detail": error_detail,
+            },
         )
 
     async def async_step_csg_qr_login(
@@ -375,9 +393,13 @@ class CSGConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 class CSGOptionsFlowHandler(config_entries.OptionsFlow):
     """Handle options flow for China Southern Power Grid Statistics."""
 
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        """Initialize options flow."""
-        self.config_entry = config_entry
+    def __init__(self) -> None:
+        """Initialize options flow.
+
+        Do not assign self.config_entry here: in current HA it is a read-only
+        property backed by self.handler, and assigning raises
+        AttributeError -> HTTP 500 when opening the options dialog.
+        """
         self.all_electricity_accounts: list[CSGElectricityAccount] = []
 
     async def async_step_init(
